@@ -116,6 +116,9 @@ fn main() {
         delay_str = std::env::var("VHOST_TEST_DELAY_MS").unwrap_or_default();
     }
     let delay_ms: u64 = delay_str.parse().unwrap_or(0);
+    // та же пауза применяется и к переподключениям ВНУТРИ теста (persistence,
+    // reconnect-стресс, hostile→alive), а не только между тестами.
+    dev::set_reconnect_delay(delay_ms);
 
     // Не шуметь дефолтным паник-хендлером: паники в харнессе ловим сами.
     std::panic::set_hook(Box::new(|_| {}));
@@ -201,7 +204,7 @@ fn usage(prog: &str) {
     eprintln!("флаги (работают под sudo, в отличие от env):");
     eprintln!("  -o, --only <f>        то же, что позиционный filter");
     eprintln!("  -s, --skip <a,b,c>    пропустить тесты по имени/категории (через запятую)");
-    eprintln!("  -d, --delay <ms>      пауза между тестами, мс");
+    eprintln!("  -d, --delay <ms>      пауза между тестами И переподключениями внутри теста, мс");
     eprintln!("      list, --list      показать все тесты и выйти");
     eprintln!("  -h, --help            эта справка");
     eprintln!();

@@ -91,6 +91,7 @@ pub fn t_persistence_reconnect(sock: &str) -> TR {
         dev::need_cap(&s, 4)?;
         dev::expect_ok("write (сессия A)", s.blk_write(sector, &pat)?)?;
     } // drop → закрытие сокета (бэкенд видит disconnect/GET_VRING_BASE)
+    dev::reconnect_cooldown(); // демону нужна пауза перед приёмом нового клиента
     let mut s = Session::connect(sock)?;
     let (st, data) = s.blk_read(sector, SEC)?;
     dev::expect_ok("read (сессия B)", st)?;
@@ -100,6 +101,9 @@ pub fn t_persistence_reconnect(sock: &str) -> TR {
 // Стресс переподключения: несколько циклов connect → read.
 pub fn t_reconnect_stress(sock: &str) -> TR {
     for i in 0..5 {
+        if i > 0 {
+            dev::reconnect_cooldown(); // пауза перед каждым новым подключением
+        }
         let mut s = Session::connect(sock)?;
         let (st, _) = s
             .blk_read(0, SEC)

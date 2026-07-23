@@ -10,6 +10,7 @@
 // значения этих адресов РАЗЛИЧАЛИСЬ — так тест ловит бэкенд, который путает
 // две трансляции.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use vmm_sys_util::eventfd::EventFd;
@@ -490,9 +491,26 @@ fn le32(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes(v)
 }
 
+static RECONNECT_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Пауза «остывания» демона перед переподключением ВНУТРИ теста. Равна значению
+/// --delay / $VHOST_TEST_DELAY_MS. Между тестами паузу ставит раннер; эта — для
+/// тестов, которые сами переподключаются (persistence, reconnect-стресс,
+/// hostile → alive), где раннер не помогает.
+pub fn set_reconnect_delay(ms: u64) {
+    RECONNECT_DELAY_MS.store(ms, Ordering::Relaxed);
+}
+pub fn reconnect_cooldown() {
+    let ms = RECONNECT_DELAY_MS.load(Ordering::Relaxed);
+    if ms > 0 {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+}
+
 /// Проба живучести демона: свежее подключение + одно чтение сектора 0.
 /// Используется после «злых» тестов — демон обязан пережить кривой ввод.
 pub fn alive(path: &str) -> TR {
+    reconnect_cooldown(); // подождать, пока демон снова готов принимать клиента
     let mut s = Session::connect(path)?;
     let (st, _) = s.blk_read(0, SECTOR)?;
     if st != VIRTIO_BLK_S_OK {
