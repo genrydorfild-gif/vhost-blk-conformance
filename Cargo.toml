@@ -1,0 +1,18 @@
+[package]
+name = "vhost-blk-conformance"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vhost-blk-conformance"
+path = "src/main.rs"
+
+# rust-vmm vhost crate = сторона frontend (бывш. master). Мы играем корректного
+# мастера и точечно проверяем, как бэкенд реализует свою часть протокола/virtio-blk.
+[dependencies]
+vhost        = { version = "0.17", features = ["vhost-user-frontend"] }
+vmm-sys-util = "0.15"   # EventFd для kick/call — версия ДОЛЖНА совпадать с той, что тянет vhost
+libc         = "0.2"    # memfd + mmap разделяемой памяти
+
+[profile.release]
+debug = true

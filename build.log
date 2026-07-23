@@ -1,0 +1,62 @@
+   Compiling vhost-blk-conformance v0.1.0 (/tmp/vhost-blk-conformance)
+warning: methods `size` and `fill` are never used
+  --> src/mem.rs:47:12
+   |
+14 | impl SharedMem {
+   | -------------- methods in this implementation
+...
+47 |     pub fn size(&self) -> usize { self.size }
+   |            ^^^^
+...
+85 |     pub fn fill(&self, off: usize, byte: u8, len: usize) {
+   |            ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `VIRTIO_F_VERSION_1` is never used
+  --> src/dev.rs:63:11
+   |
+63 | pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
+   |           ^^^^^^^^^^^^^^^^^^
+
+warning: constant `VIRTIO_BLK_F_RO` is never used
+  --> src/dev.rs:66:11
+   |
+66 | pub const VIRTIO_BLK_F_RO: u64 = 1 << 5;
+   |           ^^^^^^^^^^^^^^^
+
+warning: constant `VIRTIO_BLK_F_BLK_SIZE` is never used
+  --> src/dev.rs:67:11
+   |
+67 | pub const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
+   |           ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `VIRTIO_BLK_F_MQ` is never used
+  --> src/dev.rs:69:11
+   |
+69 | pub const VIRTIO_BLK_F_MQ: u64 = 1 << 12;
+   |           ^^^^^^^^^^^^^^^
+
+warning: field `blk_size` is never read
+   --> src/dev.rs:120:5
+    |
+114 | pub struct Session {
+    |            ------- field in this struct
+...
+120 |     blk_size: u32,
+    |     ^^^^^^^^
+
+warning: associated items `connect_event_idx` and `blk_size` are never used
+   --> src/dev.rs:139:12
+    |
+130 | impl Session {
+    | ------------ associated items in this implementation
+...
+139 |     pub fn connect_event_idx(path: &str) -> Result<Session, String> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+250 |     pub fn blk_size(&self) -> u32 {
+    |            ^^^^^^^^
+
+warning: `vhost-blk-conformance` (bin "vhost-blk-conformance") generated 7 warnings
+    Finished `release` profile [optimized + debuginfo] target(s) in 2.57s
