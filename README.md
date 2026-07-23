@@ -24,9 +24,19 @@ cargo build --release
 # все тесты против одного сокета:
 cargo run --release -- /run/vhost-blk-0.sock
 
-# фильтр по подстроке имени:
-cargo run --release -- /run/vhost-blk-0.sock scatter
-cargo run --release -- /run/vhost-blk-0.sock vring
+# посмотреть список тестов и категорий (сокет не нужен):
+cargo run --release -- list
+
+# ТОЛЬКО подмножество — позиц. фильтр по имени ИЛИ категории (подстрока, регистр не важен):
+cargo run --release -- /run/vhost-blk-0.sock scatter        # тесты с "scatter" в имени
+cargo run --release -- /run/vhost-blk-0.sock vq-mechanics   # вся категория vq-mechanics
+
+# ПРОПУСТИТЬ тесты — VHOST_SKIP: список токенов через запятую, матч по имени ИЛИ категории:
+VHOST_SKIP=hostile cargo run --release -- /run/vhost-blk-0.sock                 # без всей категории hostile
+VHOST_SKIP=hostile,large-request,many-segments cargo run --release -- /run/d0.sock
+
+# фильтр и skip комбинируются (сначала берём подмножество, потом вычитаем skip):
+VHOST_SKIP=discard cargo run --release -- /run/d0.sock req-types
 
 # сокет из окружения:
 VHOST_SOCK=/run/d0.sock cargo run --release

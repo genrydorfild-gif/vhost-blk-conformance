@@ -25,17 +25,47 @@ use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Режим списка: показать все тесты (категория + имя) и выйти. Сокет не нужен.
+    let a1 = args.get(1).map(String::as_str).unwrap_or("");
+    let a2 = args.get(2).map(String::as_str).unwrap_or("");
+    if a1 == "list" || a1 == "--list" || a2 == "list" || a2 == "--list" {
+        let mut last = "";
+        for (name, cat, _) in tests::all() {
+            if cat != last {
+                println!("\n[{}]", cat);
+                last = cat;
+            }
+            println!("  {}", name);
+        }
+        return;
+    }
+
     let sock = args
         .get(1)
         .cloned()
         .or_else(|| std::env::var("VHOST_SOCK").ok())
         .unwrap_or_default();
     if sock.is_empty() {
-        eprintln!("usage: {} <socket-path> [name-filter]", args[0]);
-        eprintln!("   or: VHOST_SOCK=/run/d0.sock {} [name-filter]", args[0]);
+        eprintln!("usage: {} <socket> [name-или-category-фильтр]", args[0]);
+        eprintln!("  все тесты:        {} /run/d0.sock", args[0]);
+        eprintln!("  список тестов:    {} list", args[0]);
+        eprintln!("  только подмнож.:  {} /run/d0.sock vq-mechanics", args[0]);
+        eprintln!(
+            "  пропустить:       VHOST_SKIP=hostile,large-request {} /run/d0.sock",
+            args[0]
+        );
         std::process::exit(2);
     }
-    let filter = args.get(2).cloned().unwrap_or_default();
+    // Включающий фильтр (позиц. аргумент): имя ИЛИ категория содержит подстроку.
+    let filter = args.get(2).cloned().unwrap_or_default().to_lowercase();
+    // Исключение: VHOST_SKIP="tok1,tok2" — пропустить тесты, у которых имя ИЛИ
+    // категория содержит любой из токенов (регистронезависимо).
+    let skip_tokens: Vec<String> = std::env::var("VHOST_SKIP")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
     let delay_ms: u64 = std::env::var("VHOST_TEST_DELAY_MS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -48,11 +78,18 @@ fn main() {
     // Test = кортеж Copy-типов, поэтому забираем по значению — без ссылочных слоёв.
     let selected: Vec<tests::Test> = all
         .into_iter()
-        .filter(|(name, _, _)| filter.is_empty() || name.contains(filter.as_str()))
+        .filter(|(name, cat, _)| filter.is_empty() || name_or_cat(name, cat, &filter))
+        .filter(|(name, cat, _)| !skip_tokens.iter().any(|t| name_or_cat(name, cat, t)))
         .collect();
 
     println!("vhost-user-blk conformance (rust-vmm Frontend)");
     println!("socket: {}", sock);
+    if !filter.is_empty() {
+        println!("filter: {}", filter);
+    }
+    if !skip_tokens.is_empty() {
+        println!("skip:   {}", skip_tokens.join(", "));
+    }
     println!("tests:  {}\n", selected.len());
 
     let (mut pass, mut fail, mut skip) = (0u32, 0u32, 0u32);
@@ -102,4 +139,9 @@ fn main() {
         }
     }
     std::process::exit(if fail > 0 { 1 } else { 0 });
+}
+
+/// true, если имя ИЛИ категория теста содержит токен (регистронезависимо).
+fn name_or_cat(name: &str, cat: &str, tok: &str) -> bool {
+    name.to_lowercase().contains(tok) || cat.to_lowercase().contains(tok)
 }
