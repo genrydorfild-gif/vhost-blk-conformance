@@ -21,29 +21,42 @@
 cd /tmp/vhost-blk-conformance
 cargo build --release
 
-# все тесты против одного сокета:
-cargo run --release -- /run/vhost-blk-0.sock
+BIN=./target/release/vhost-blk-conformance
 
-# посмотреть список тестов и категорий (сокет не нужен):
-cargo run --release -- list
+# все тесты против одного сокета (обычно нужен sudo — сокет root-only):
+sudo $BIN /run/vhost-blk-0.sock
+
+# список тестов и категорий (сокет не нужен):
+$BIN list
 
 # ТОЛЬКО подмножество — позиц. фильтр по имени ИЛИ категории (подстрока, регистр не важен):
-cargo run --release -- /run/vhost-blk-0.sock scatter        # тесты с "scatter" в имени
-cargo run --release -- /run/vhost-blk-0.sock vq-mechanics   # вся категория vq-mechanics
+sudo $BIN /run/d0.sock scatter          # тесты с "scatter" в имени
+sudo $BIN /run/d0.sock vq-mechanics     # вся категория vq-mechanics
+sudo $BIN /run/d0.sock --only vq-mechanics   # то же флагом
 
-# ПРОПУСТИТЬ тесты — VHOST_SKIP: список токенов через запятую, матч по имени ИЛИ категории:
-VHOST_SKIP=hostile cargo run --release -- /run/vhost-blk-0.sock                 # без всей категории hostile
-VHOST_SKIP=hostile,large-request,many-segments cargo run --release -- /run/d0.sock
+# ПРОПУСТИТЬ тесты — флаг --skip (список через запятую, матч по имени ИЛИ категории):
+sudo $BIN /run/d0.sock --skip hostile                        # без всей категории hostile
+sudo $BIN /run/d0.sock --skip hostile,large-request,many-segments
 
-# фильтр и skip комбинируются (сначала берём подмножество, потом вычитаем skip):
-VHOST_SKIP=discard cargo run --release -- /run/d0.sock req-types
-
-# сокет из окружения:
-VHOST_SOCK=/run/d0.sock cargo run --release
-
-# если демону нужен cooldown между подключениями (каждый тест = новое соединение):
-VHOST_TEST_DELAY_MS=300 cargo run --release -- /run/d0.sock
+# фильтр и skip комбинируются (сначала подмножество, потом вычитаем skip):
+sudo $BIN /run/d0.sock req-types --skip discard --delay 300
 ```
+
+### ⚠️ Флаги vs переменные окружения под `sudo`
+
+`sudo` по умолчанию (`env_reset`) **стирает окружение**, поэтому
+`VHOST_SKIP=... sudo $BIN` НЕ сработает. Отсюда флаги. Env-эквиваленты
+(`$VHOST_SOCK`, `$VHOST_SKIP`, `$VHOST_TEST_DELAY_MS`) остаются как fallback, но под
+sudo их надо прокидывать явно:
+
+```bash
+sudo $BIN /run/d0.sock --skip hostile          # рекомендуется: флаги
+sudo -E VHOST_SKIP=hostile $BIN /run/d0.sock   # -E сохраняет твоё окружение
+sudo env VHOST_SKIP=hostile $BIN /run/d0.sock  # прокинуть конкретную переменную
+```
+
+Флаги: `-o/--only <f>`, `-s/--skip <a,b,c>`, `-d/--delay <ms>`, `list`, `-h/--help`.
+Приоритет: флаг > позиционный аргумент > переменная окружения.
 
 Демон должен уже **слушать** сокет. `Frontend::connect` сам ретраит подключение,
 пока бэкенд не готов — это закрывает твой сценарий «~5 сек на подготовку после разрыва».

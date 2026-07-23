@@ -24,11 +24,58 @@ mod tests;
 use std::time::Duration;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    // Режим списка: показать все тесты (категория + имя) и выйти. Сокет не нужен.
-    let a1 = args.get(1).map(String::as_str).unwrap_or("");
-    let a2 = args.get(2).map(String::as_str).unwrap_or("");
-    if a1 == "list" || a1 == "--list" || a2 == "list" || a2 == "--list" {
+    let prog = std::env::args().next().unwrap_or_else(|| "vhost-blk-conformance".into());
+
+    // --- разбор аргументов: флаги + позиционные (env — как fallback) ----------
+    // Флаги работают под sudo (переменные окружения sudo по умолчанию стирает).
+    //   <socket>                 позиционный: путь к сокету
+    //   [filter]                 позиционный: имя/категория (только это подмножество)
+    //   --only/-o <f>            то же, что позиционный filter
+    //   --skip/-s <a,b,c>        пропустить тесты по имени/категории (через запятую)
+    //   --delay/-d <ms>          пауза между тестами, мс
+    //   list | --list           показать все тесты и выйти
+    let mut filter = String::new();
+    let mut skip_csv = String::new();
+    let mut delay_str = String::new();
+    let mut list = false;
+    let mut positionals: Vec<String> = Vec::new();
+
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < raw.len() {
+        let a = raw[i].clone();
+        let take_val = |inline: Option<&str>, i: &mut usize| -> String {
+            if let Some(v) = inline {
+                v.to_string()
+            } else {
+                *i += 1;
+                raw.get(*i).cloned().unwrap_or_default()
+            }
+        };
+        let (key, inline) = match a.split_once('=') {
+            Some((k, v)) => (k.to_string(), Some(v)),
+            None => (a.clone(), None),
+        };
+        match key.as_str() {
+            "list" | "--list" => list = true,
+            "--only" | "-o" | "--filter" => filter = take_val(inline, &mut i),
+            "--skip" | "-s" => skip_csv = take_val(inline, &mut i),
+            "--delay" | "-d" => delay_str = take_val(inline, &mut i),
+            "-h" | "--help" => {
+                usage(&prog);
+                return;
+            }
+            s if s.starts_with('-') => {
+                eprintln!("неизвестный флаг: {}", s);
+                usage(&prog);
+                std::process::exit(2);
+            }
+            _ => positionals.push(a),
+        }
+        i += 1;
+    }
+
+    if list {
         let mut last = "";
         for (name, cat, _) in tests::all() {
             if cat != last {
@@ -40,36 +87,35 @@ fn main() {
         return;
     }
 
-    let sock = args
-        .get(1)
+    // socket: 1-й позиционный > $VHOST_SOCK
+    let sock = positionals
+        .get(0)
         .cloned()
         .or_else(|| std::env::var("VHOST_SOCK").ok())
         .unwrap_or_default();
     if sock.is_empty() {
-        eprintln!("usage: {} <socket> [name-или-category-фильтр]", args[0]);
-        eprintln!("  все тесты:        {} /run/d0.sock", args[0]);
-        eprintln!("  список тестов:    {} list", args[0]);
-        eprintln!("  только подмнож.:  {} /run/d0.sock vq-mechanics", args[0]);
-        eprintln!(
-            "  пропустить:       VHOST_SKIP=hostile,large-request {} /run/d0.sock",
-            args[0]
-        );
+        usage(&prog);
         std::process::exit(2);
     }
-    // Включающий фильтр (позиц. аргумент): имя ИЛИ категория содержит подстроку.
-    let filter = args.get(2).cloned().unwrap_or_default().to_lowercase();
-    // Исключение: VHOST_SKIP="tok1,tok2" — пропустить тесты, у которых имя ИЛИ
-    // категория содержит любой из токенов (регистронезависимо).
-    let skip_tokens: Vec<String> = std::env::var("VHOST_SKIP")
-        .unwrap_or_default()
+    // filter: --only > 2-й позиционный (env для filter нет)
+    if filter.is_empty() {
+        filter = positionals.get(1).cloned().unwrap_or_default();
+    }
+    let filter = filter.to_lowercase();
+    // skip: --skip > $VHOST_SKIP
+    if skip_csv.is_empty() {
+        skip_csv = std::env::var("VHOST_SKIP").unwrap_or_default();
+    }
+    let skip_tokens: Vec<String> = skip_csv
         .split(',')
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    let delay_ms: u64 = std::env::var("VHOST_TEST_DELAY_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    // delay: --delay > $VHOST_TEST_DELAY_MS
+    if delay_str.is_empty() {
+        delay_str = std::env::var("VHOST_TEST_DELAY_MS").unwrap_or_default();
+    }
+    let delay_ms: u64 = delay_str.parse().unwrap_or(0);
 
     // Не шуметь дефолтным паник-хендлером: паники в харнессе ловим сами.
     std::panic::set_hook(Box::new(|_| {}));
@@ -144,4 +190,27 @@ fn main() {
 /// true, если имя ИЛИ категория теста содержит токен (регистронезависимо).
 fn name_or_cat(name: &str, cat: &str, tok: &str) -> bool {
     name.to_lowercase().contains(tok) || cat.to_lowercase().contains(tok)
+}
+
+fn usage(prog: &str) {
+    eprintln!("usage: {} <socket> [filter] [флаги]", prog);
+    eprintln!();
+    eprintln!("  <socket>              путь к unix-сокету демона (или $VHOST_SOCK)");
+    eprintln!("  [filter]              гнать ТОЛЬКО тесты с этой подстрокой в имени/категории");
+    eprintln!();
+    eprintln!("флаги (работают под sudo, в отличие от env):");
+    eprintln!("  -o, --only <f>        то же, что позиционный filter");
+    eprintln!("  -s, --skip <a,b,c>    пропустить тесты по имени/категории (через запятую)");
+    eprintln!("  -d, --delay <ms>      пауза между тестами, мс");
+    eprintln!("      list, --list      показать все тесты и выйти");
+    eprintln!("  -h, --help            эта справка");
+    eprintln!();
+    eprintln!("примеры:");
+    eprintln!("  sudo {} /run/d0.sock", prog);
+    eprintln!("  sudo {} /run/d0.sock vq-mechanics", prog);
+    eprintln!("  sudo {} /run/d0.sock --skip hostile,large-request", prog);
+    eprintln!("  sudo {} /run/d0.sock req-types --skip discard --delay 300", prog);
+    eprintln!();
+    eprintln!("env-эквиваленты (fallback): $VHOST_SOCK, $VHOST_SKIP, $VHOST_TEST_DELAY_MS");
+    eprintln!("  (под sudo используй флаги или `sudo -E` / `sudo env VAR=... {}`)", prog);
 }
