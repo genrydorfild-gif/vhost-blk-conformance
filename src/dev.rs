@@ -150,11 +150,22 @@ impl Session {
         fe.set_owner().map_err(|e| format!("set_owner: {:?}", e))?;
         let offered = fe.get_features().map_err(|e| format!("get_features: {:?}", e))?;
 
+        // Акаем ТОЛЬКО protocol-фичи, которые реально реализуем. Если заакать
+        // фичу, требующую сопутствующей настройки, а настройку не сделать —
+        // бэкенд (или слой демона над libvhost-server) будет считать её включённой
+        // и сломается. В частности НЕЛЬЗЯ акать:
+        //   INFLIGHT_SHMFD — потребует GET/SET_INFLIGHT_FD (регион inflight);
+        //   LOG_SHMFD      — миграция/dirty log (SET_LOG_BASE);
+        //   BACKEND_REQ    — обратный канал (SET_BACKEND_REQ_FD);
+        //   INBAND_NOTIFICATIONS, CONFIGURE_MEM_SLOTS, HOST_NOTIFIER, ...
+        // Нам нужен только CONFIG (для GET_CONFIG → ёмкость).
         let mut proto = VhostUserProtocolFeatures::empty();
         if offered & VHOST_USER_F_PROTOCOL_FEATURES != 0 {
-            proto = fe
+            let want = VhostUserProtocolFeatures::CONFIG;
+            let offered_proto = fe
                 .get_protocol_features()
                 .map_err(|e| format!("get_protocol_features: {:?}", e))?;
+            proto = offered_proto & want; // пересечение: только поддерживаемое обеими сторонами
             fe.set_protocol_features(proto)
                 .map_err(|e| format!("set_protocol_features: {:?}", e))?;
         }
