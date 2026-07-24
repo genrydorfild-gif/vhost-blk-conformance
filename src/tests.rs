@@ -3,7 +3,9 @@
 
 use crate::dev::TR;
 use crate::t_data as d;
+use crate::t_precision as prec;
 use crate::t_proto as p;
+use crate::t_robust as rob;
 
 pub type Test = (&'static str, &'static str, fn(&str) -> TR);
 
@@ -54,6 +56,33 @@ pub fn all() -> Vec<Test> {
         ("config-capacity-consistency", "config", p::t_config_capacity_consistency),
         ("config-partial-read", "config", p::t_config_partial_read),
         ("get-features-stable", "config", p::t_get_features_stable),
+        // устойчивость к битым дескрипторам/кольцу (демон обязан выжить —
+        // очередь фейл-стопит, процесс живёт; регрессионные сторожа защит)
+        ("desc-next-out-of-bounds", "robustness", rob::t_desc_next_oob),
+        ("descriptor-loop", "robustness", rob::t_desc_loop),
+        ("oob-descriptor-address", "robustness", rob::t_desc_addr_oob),
+        ("descriptor-len-past-region", "robustness", rob::t_desc_len_past_region),
+        ("huge-descriptor-len", "robustness", rob::t_desc_huge_len),
+        ("readable-after-writable", "robustness", rob::t_readable_after_writable),
+        ("indirect-with-next", "robustness", rob::t_indirect_with_next),
+        ("nested-indirect", "robustness", rob::t_nested_indirect),
+        ("indirect-bad-table-len", "robustness", rob::t_indirect_bad_table_len),
+        ("avail-head-out-of-bounds", "robustness", rob::t_avail_head_oob),
+        // точность имплементации протокола (функциональные ошибки, не безопасность)
+        ("vring-base-roundtrip", "precision", prec::t_vring_base_roundtrip),
+        ("vring-base-tracks-consumed", "precision", prec::t_vring_base_tracks_consumed),
+        ("notify-signaled-when-enabled", "precision", prec::t_notify_signaled),
+        ("notify-suppressed-no-interrupt", "precision", prec::t_notify_suppressed),
+        ("feature-gating-discard", "precision", prec::t_feature_gating_discard),
+        ("config-blk-size-sane", "precision", prec::t_config_blk_size_sane),
+        ("used-index-wrap", "precision", prec::t_used_index_wrap),
+        // валидация на уровне blk (запрос → IOERR, очередь остаётся живой)
+        ("get-id-wrong-buffer-size", "validation", rob::t_getid_wrong_size),
+        ("discard-multi-segment", "validation", rob::t_discard_multi_segment),
+        ("discard-beyond-capacity", "validation", rob::t_discard_beyond_capacity),
+        ("sector+len-overflow", "validation", rob::t_sector_overflow),
+        ("discard-zero-sectors", "validation", rob::t_discard_zero_sectors),
+        ("readonly-write-rejected", "validation", rob::t_readonly_write),
         // жизненный цикл / злой ввод (демон обязан выжить)
         ("reconnect-stress", "lifecycle", p::t_reconnect_stress),
         ("double-set-owner", "hostile", p::t_double_set_owner),

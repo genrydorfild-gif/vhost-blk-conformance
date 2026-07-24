@@ -10,6 +10,7 @@
 // значения этих адресов РАЗЛИЧАЛИСЬ — так тест ловит бэкенд, который путает
 // две трансляции.
 
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -51,8 +52,8 @@ pub const TIMEOUT_MS: u64 = 5000;
 
 // ---- флаги virtqueue -------------------------------------------------------
 
-const VRING_DESC_F_NEXT: u16 = 1;
-const VRING_DESC_F_WRITE: u16 = 2;
+pub const VRING_DESC_F_NEXT: u16 = 1;
+pub const VRING_DESC_F_WRITE: u16 = 2;
 pub const VRING_DESC_F_INDIRECT: u16 = 4;
 pub const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
 
@@ -119,8 +120,8 @@ pub struct Session {
     acked: u64,
     capacity_sectors: u64,
     blk_size: u32,
+    offered: u64,
     kick: EventFd,
-    #[allow(dead_code)]
     call: EventFd,
     next_desc: u16,
     avail_idx: u16,
@@ -143,9 +144,35 @@ impl Session {
         Ok(s)
     }
 
+    /// Согласовать все фичи, КРОМЕ переданных в mask_out (и настроить vring).
+    /// Позволяет проверить, честно ли бэкенд гейтит запросы по НЕГОЦИИРОВАННЫМ
+    /// фичам (а не по тому, что он просто умеет).
+    pub fn connect_masking(path: &str, mask_out: u64) -> Result<Session, String> {
+        let mut s = Session::handshake_masked(path, true, false, mask_out)?;
+        s.setup_vring()?;
+        Ok(s)
+    }
+
+    /// Готовая сессия, где last_avail и used.idx стартуют с `base` (проверка
+    /// корректной 16-битной обёртки индексов колец).
+    pub fn connect_at_base(path: &str, base: u16) -> Result<Session, String> {
+        let mut s = Session::handshake_masked(path, true, false, 0)?;
+        s.setup_vring_impl(base)?;
+        Ok(s)
+    }
+
     /// Handshake без настройки vring — для «злых» тестов, дёргающих SET_VRING_* руками.
     /// do_mem_table=false — даже без SET_MEM_TABLE.
     pub fn handshake(path: &str, do_mem_table: bool, want_event_idx: bool) -> Result<Session, String> {
+        Session::handshake_masked(path, do_mem_table, want_event_idx, 0)
+    }
+
+    pub fn handshake_masked(
+        path: &str,
+        do_mem_table: bool,
+        want_event_idx: bool,
+        mask_out: u64,
+    ) -> Result<Session, String> {
         // второй аргумент — ЧИСЛО очередей (не размер!). Мы используем только очередь 0.
         let mut fe = Frontend::connect(path, 1).map_err(|e| format!("connect: {:?}", e))?;
         fe.set_owner().map_err(|e| format!("set_owner: {:?}", e))?;
@@ -177,6 +204,7 @@ impl Session {
         if !want_event_idx {
             acked &= !VIRTIO_F_RING_EVENT_IDX;
         }
+        acked &= !mask_out; // намеренно НЕ согласуем указанные фичи
         fe.set_features(acked).map_err(|e| format!("set_features: {:?}", e))?;
 
         let (capacity_sectors, blk_size) = if proto.contains(VhostUserProtocolFeatures::CONFIG) {
@@ -194,7 +222,9 @@ impl Session {
 
         let mem = SharedMem::new(REGION_SIZE)?;
         let kick = EventFd::new(0).map_err(|e| format!("eventfd kick: {:?}", e))?;
-        let call = EventFd::new(0).map_err(|e| format!("eventfd call: {:?}", e))?;
+        // call — неблокирующий, чтобы можно было опрашивать уведомления устройства.
+        let call = EventFd::new(libc::EFD_NONBLOCK)
+            .map_err(|e| format!("eventfd call: {:?}", e))?;
 
         let s = Session {
             fe,
@@ -203,6 +233,7 @@ impl Session {
             acked,
             capacity_sectors,
             blk_size,
+            offered,
             kick,
             call,
             next_desc: 0,
@@ -229,23 +260,36 @@ impl Session {
         }
     }
 
-    /// Стандартная настройка очереди 0 корректными значениями.
+    /// Стандартная настройка очереди 0 корректными значениями (base = 0).
     pub fn setup_vring(&mut self) -> Result<(), String> {
+        self.setup_vring_impl(0)
+    }
+
+    /// Настройка очереди с произвольным начальным индексом колец `base_idx`.
+    /// При base_idx != 0 инициализируем avail.idx и used.idx в памяти и теневые
+    /// счётчики так, чтобы устройство и мы стартовали от одного значения.
+    pub fn setup_vring_impl(&mut self, base_idx: u16) -> Result<(), String> {
         self.mem.zero(DESC_OFF, DATA_OFF - DESC_OFF); // кольца в ноль
         self.fe.set_vring_num(0, QSZ).map_err(|e| format!("set_vring_num: {:?}", e))?;
-        let base = self.mem.base_va();
+        let va = self.mem.base_va();
         let cfg = VringConfigData {
             queue_max_size: QSZ,
             queue_size: QSZ,
             flags: 0,
             // адреса колец — В НАШЕМ VA (userspace_addr-относительные)
-            desc_table_addr: base + DESC_OFF as u64,
-            avail_ring_addr: base + AVAIL_OFF as u64,
-            used_ring_addr: base + USED_OFF as u64,
+            desc_table_addr: va + DESC_OFF as u64,
+            avail_ring_addr: va + AVAIL_OFF as u64,
+            used_ring_addr: va + USED_OFF as u64,
             log_addr: None,
         };
         self.fe.set_vring_addr(0, &cfg).map_err(|e| format!("set_vring_addr: {:?}", e))?;
-        self.fe.set_vring_base(0, 0).map_err(|e| format!("set_vring_base: {:?}", e))?;
+        self.fe.set_vring_base(0, base_idx).map_err(|e| format!("set_vring_base: {:?}", e))?;
+        if base_idx != 0 {
+            self.mem.w16(AVAIL_OFF + 2, base_idx); // avail.idx
+            self.mem.w16(USED_OFF + 2, base_idx); // used.idx (устройство продолжит отсюда)
+            self.avail_idx = base_idx;
+            self.used_idx_seen = base_idx;
+        }
         self.fe.set_vring_kick(0, &self.kick).map_err(|e| format!("set_vring_kick: {:?}", e))?;
         self.fe.set_vring_call(0, &self.call).map_err(|e| format!("set_vring_call: {:?}", e))?;
         if self.acked & VHOST_USER_F_PROTOCOL_FEATURES != 0 {
@@ -265,6 +309,10 @@ impl Session {
     pub fn has_feature(&self, bit: u64) -> bool {
         self.acked & bit != 0
     }
+    /// Фича ПРЕДЛОЖЕНА устройством (в GET_FEATURES), независимо от того, заакали ли.
+    pub fn offered_has(&self, bit: u64) -> bool {
+        self.offered & bit != 0
+    }
     pub fn has_proto(&self, f: VhostUserProtocolFeatures) -> bool {
         self.proto.contains(f)
     }
@@ -273,6 +321,35 @@ impl Session {
     }
     pub fn base_va(&self) -> u64 {
         self.mem.base_va()
+    }
+
+    /// GET_VRING_BASE(0): текущий last_avail устройства (останавливает очередь).
+    pub fn get_vring_base(&self) -> Result<u32, String> {
+        self.fe
+            .get_vring_base(0)
+            .map_err(|e| format!("get_vring_base: {:?}", e))
+    }
+
+    /// Сбросить накопленное уведомление на callfd (не блокирует).
+    pub fn drain_call(&mut self) {
+        let _ = self.call.read();
+    }
+
+    /// Подождать уведомление устройства на callfd до timeout. true = пришло.
+    /// Служит для проверки, УВЕДОМЛЯЕТ ли устройство (и подавляет ли при NO_INTERRUPT).
+    pub fn wait_call(&mut self, timeout_ms: u64) -> bool {
+        let mut pfd = libc::pollfd {
+            fd: self.call.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, timeout_ms as libc::c_int) };
+        if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
+            let _ = self.call.read();
+            true
+        } else {
+            false
+        }
     }
 
     // ---- низкоуровневый submit ---------------------------------------------
@@ -341,6 +418,27 @@ impl Session {
 
     pub fn set_avail_flags(&self, flags: u16) {
         self.mem.w16(AVAIL_OFF, flags);
+    }
+
+    // ---- сырые примитивы для «злых»/битых дескрипторов --------------------
+    // Позволяют собрать намеренно некорректную цепочку (петля, битый next,
+    // адрес/длина вне региона, indirect-извраты) для проверки защит бэкенда.
+
+    /// Записать дескриптор с ПОЛНОСТЬЮ произвольными полями (addr — уже GPA).
+    pub fn write_raw_desc(&self, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
+        let e = DESC_OFF + (idx % QSZ) as usize * 16;
+        self.mem.w64(e, addr);
+        self.mem.w32(e + 8, len);
+        self.mem.w16(e + 12, flags);
+        self.mem.w16(e + 14, next);
+    }
+
+    /// Опубликовать в avail произвольный head-индекс (в т.ч. заведомо неверный).
+    pub fn push_avail(&mut self, head: u16) {
+        let ring = AVAIL_OFF + 4 + (self.avail_idx % QSZ) as usize * 2;
+        self.mem.w16(ring, head);
+        self.avail_idx = self.avail_idx.wrapping_add(1);
+        self.mem.w16(AVAIL_OFF + 2, self.avail_idx);
     }
 
     pub fn kick(&self) {

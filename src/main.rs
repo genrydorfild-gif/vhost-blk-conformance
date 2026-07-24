@@ -18,7 +18,9 @@
 mod mem;
 mod dev;
 mod t_data;
+mod t_precision;
 mod t_proto;
+mod t_robust;
 mod tests;
 
 use std::time::Duration;
